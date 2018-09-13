@@ -1,0 +1,156 @@
+#!/bin/bash
+
+# This downloads the entire Wall Street Journal into a datestamped folder full of individual PDFs each representing one
+#   page of the given day's paper. Once all possible pages have been downloaded, the program combines all of these PDFs
+#   into a single large PDF of the entire paper (typically 14MB - 20MB), then deletes all of the individual PDF files
+#   to save space.
+
+# TODO:
+#       1. satisfy all the TODO headers below
+#       2. group sections into multiple appropriate functions
+#       3. just learned that prior to mid-November 2016, there WAS a Section C & D on most weekdays (11/09/16 for example). Fix this
+#       4. port this whole thing to python / java so that it's platform independent.
+#          (This was built on Mac and not tested on any other *nix OSes yet - very likely issues exist on other env's)
+
+# basic dates for use later
+export yesterdayDate="`date --date='1 days ago' +%Y%m%d`"
+export curDate="`date +%Y%m%d`"
+
+# delay initial prompt to make it easier for users to read
+sleep 1
+
+# get user input on what day's paper they want
+echo -e "\n What day's paper would you like to download?"
+read -p "    Type 'today', 'yesterday', or give a date in format YYYYMMDD: " userRequestedDateInput
+
+# ask user if they want the paper to automatically open as one large combined PDF once all pages are done downloading...
+echo -e "\n Do you want to auto-open the entire paper as one PDF immediately after download has completed?"
+read -p "        Type 'yes' or 'no': " userAutoOpenPdfInput
+
+# assign the dateToDownload variable properly.
+if [ ${userRequestedDateInput} == "today" ]; then
+        export dateToDownload="${curDate}"
+elif [ ${userRequestedDateInput} == "yesterday" ]; then
+        export dateToDownload=${yesterdayDate}
+else export dateToDownload=${userRequestedDateInput} # need to validate this input, but do that later...
+fi
+
+#export dayOfWeek="`date +%A`"
+export dayOfWeek="`date --date="${dateToDownload}" "+%A"`"
+
+# set directories & log file name
+export wsjDir="/home/user/Desktop/WSJ"
+export exportDir=${wsjDir}/${dateToDownload}
+export combinedPdfFileName=${exportDir}/${dateToDownload}-WSJ-full.pdf
+export logDir=${wsjDir}/downloadLogs/${dateToDownload}
+export logFile="${logDir}/downloadLog_${dateToDownload}.txt"
+
+# set URL Prefix
+export urlPrefix="http://online.wsj.com/public/resources/documents/print/WSJ_-"
+
+# make today's exportDirectory & change to it. Also create todays log directory
+mkdir -p ${exportDir}
+cd ${exportDir}
+mkdir -p ${logDir}
+
+# create the log file
+touch ${logFile}
+
+# log the date and time this program is run (mainly useful if date chosen is NOT the current date)
+echo -e "========================== The current datetime is `date` ==================" | tee -a ${logFile}
+echo "userRequestedDateInput was: ${userRequestedDateInput}" | tee -a ${logFile}
+echo "userAutoOpenPdfInput was: ${userAutoOpenPdfInput}" | tee -a ${logFile}
+echo "STARTING DOWNLOAD FOR THE ${dateToDownload} VERSION OF THE WSJ." | tee -a ${logFile}
+
+# show the new working dir
+echo -e "\n -----changed dir to: `pwd` ---------" | tee -a ${logFile}
+
+# show the date
+echo -e "\n Downloading The Wall Street Journal for: `date --date="${dateToDownload}" +%A\ %B\ %d,\ %Y`" | tee -a ${logFile}
+
+# Most days, these are the only sections to download. See explanation below.
+export sectionsToDownload="A B"
+
+# The WSJ has 2 sections (A & B) Monday - Friday. On Saturdays, it has Sections C & D as well.
+# Occosionally on Mondays, there is a Section R for "Wealth Management", and it typically only has 12 pages.
+# Occosionally on Fridays, there is a Section M for "Mansion"
+if [ ${dayOfWeek} == "Sunday" ]; then
+        echo -e "\n The requested date is a Sunday. There's no WSJ on this date! \n   Exiting now.... " | tee -a ${logFile}
+        exit 0
+elif [ ${dayOfWeek} == "Friday" ]; then
+        echo -e "\n The requested date is a Friday, so also searching for Section M..." | tee -a ${logFile}
+        export sectionsToDownload="A B M"
+elif [ ${dayOfWeek} == "Saturday" ]; then
+        echo -e "\n The requested date is a Saturday, so also searching for Sections C & D..." | tee -a ${logFile}
+        export sectionsToDownload="A B C D"
+elif [ ${dayOfWeek} == "Monday" ]; then
+        echo -e "\n The requested date is a Monday, so also searching for Section R..." | tee -a ${logFile}
+        export sectionsToDownload="A B R"
+else echo -e "\n Since the requested date is a ${dayOfWeek}, there are no special sections. Only searching for Sections A & B..." | tee -a ${logFile}
+fi
+
+# The highest page number in any given section (that I've seen to date) is 24. Most days, no section goes above 20.
+#       Most days, Section A is either 18 or 20 pages, (sometimes 24 pages) and B is only 12-18 pages.
+#       This cycles through all possible pages (1 - 24) just to be safe.
+#       Any page that does not exist is still downloaded as a mini 11kb-ish file, but is deleted at the end of the script anyway.
+#
+# The below is a simple nested for loop to iterate through each of the possible sections, and each of the 20 pages for those sections
+for pageLetter in ${sectionsToDownload}; do
+        for pageNum in {1..9}; do
+                downloadUrl="${urlPrefix}${pageLetter}00${pageNum}-${dateToDownload}.pdf"
+                echo -e "\n    ======== getting ${pageLetter} ${pageNum} ======== \nfrom: ${downloadUrl}" | tee -a ${logFile}
+                curl -O -# ${downloadUrl} | tee -a ${logFile}
+        done
+        # one more for loop needed for pages 10 - 24 (aka page numbers with 2 digits) since WSJ prefixes these as 001, or 010, or 020, etc.
+        for pageNum in {10..24}; do
+                downloadUrl="${urlPrefix}${pageLetter}0${pageNum}-${dateToDownload}.pdf"
+                echo -e "\n    ======== getting ${pageLetter} ${pageNum} ======== \nfrom: ${downloadUrl}" | tee -a ${logFile}
+                curl -O -# ${downloadUrl} | tee -a ${logFile}
+        done
+done
+
+# delete all files smaller than 20k (aka pages that did not exist, which are typically 11kb to 12kb)
+# TODO:  there's obviously better ways to do this, such as using $ curl -I to check the header for:
+#       HTTP Response Code (aka only allow HTTP 200 OK) --> which can be done by this command: $ if [ "`curl -I -# ${goodUrl} | grep "404 Not Found" | wc -l | xargs`" == "1" ]; then echo "this paper does exist"; else echo "              this paper does not exist"; fi
+#       OR check the content-type in the header to ensure it mentions "pdf", not "html". Similar command to above with different grep string
+export numFilesToDelete=`find . -name "*${dateToDownload}.pdf" -size -20k | wc -l`
+export numFilesToKeep=`find . -name "*${dateToDownload}.pdf" -size +20k | wc -l`
+
+# show the user how many files are going to be kept and deleted.
+echo -e "\n    numFilesToDelete = ${numFilesToDelete}" | tee -a ${logFile}
+echo "    numFilesToKeep = ${numFilesToKeep}" | tee -a ${logFile}
+
+# give user a few seconds to read the logs...
+echo -e "\n sleeping 2 seconds ...." | tee -a ${logFile}
+sleep 2
+
+echo " done sleeping..." | tee -a ${logFile}
+echo -e "\n   removing ${numFilesToDelete} files for pages that weren't in this day's paper..." | tee -a ${logFile}
+
+# find all the files under the arbitrarily-chosen size threshold and delete them
+find . -name "WSJ_-*${dateToDownload}.pdf" -size -20k -delete
+
+# nifty built in script to Mac OSX which combines multiple PDFs into one long pdf.
+# Important to run this since anyone who has a deafult PDF viewer other than Mac's built in Preview (aka Adobe Acrobat)
+#       will likely experience a crash from trying to open 30-50 separate PDFs. Preview handles this better than Acrobat.
+#       Combining all pages into one PDF is a safeguard that will lower the chance of a non-Preview PDF viewer crashing.
+echo -e "\n Running Automator's 'Combine PDF Pages.action' script to combine all PDF pages into one file." | tee -a ${logFile}
+#/System/Library/Automator/Combine\ PDF\ Pages.action/Contents/Resources/join.py -o ${combinedPdfFileName} ${exportDir}/WSJ*.pdf
+pdftk ${exportDir}/WSJ*.pdf cat output ${combinedPdfFileName}
+
+mpack -s WSJ  ${combinedPdfFileName} youemail@gmail.com
+echo -e "\n Removing individual pages now that all have been combined into single file..."
+rm -v ${exportDir}/WSJ*${dateToDownload}*.pdf | tee -a ${logFile}
+
+if [ ${userAutoOpenPdfInput} == "yes" ]; then
+        echo -e "\n Auto-opening the entire paper as one combined PDF for you now... " | tee -a ${logFile}
+        # auto-opens the single, combined PDF.
+        open ${combinedPdfFileName}
+else
+        echo -e "Not auto-opening the paper for you, but you can access it via finder here: ${combinedPdfFileName}"
+        # opens a Finder window in the exportDir folder
+        open .
+fi
+
+
+
